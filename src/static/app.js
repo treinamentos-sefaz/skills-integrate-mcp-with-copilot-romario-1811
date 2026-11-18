@@ -3,15 +3,50 @@ document.addEventListener("DOMContentLoaded", () => {
   const activitySelect = document.getElementById("activity");
   const signupForm = document.getElementById("signup-form");
   const messageDiv = document.getElementById("message");
+  const loginToggle = document.getElementById("login-toggle");
+  const loginForm = document.getElementById("login-form");
+  const logoutButton = document.getElementById("logout-button");
+  const authStatus = document.getElementById("auth-status");
+  const adminRequired = document.getElementById("admin-required");
+  let isAdmin = false;
+
+  function setAdminStatus(authenticated, configured = true) {
+    isAdmin = authenticated;
+    signupForm.classList.toggle("hidden", !isAdmin);
+    adminRequired.classList.toggle("hidden", isAdmin);
+    loginToggle.classList.toggle("hidden", isAdmin);
+    logoutButton.classList.toggle("hidden", !isAdmin);
+    loginForm.classList.add("hidden");
+
+    if (isAdmin) {
+      authStatus.textContent = "Signed in as a teacher.";
+    } else if (!configured) {
+      authStatus.textContent = "Teacher login is not configured.";
+    } else {
+      authStatus.textContent = "Viewing activities as a student.";
+    }
+  }
+
+  async function refreshAuthStatus() {
+    const response = await fetch("/auth/status");
+    const result = await response.json();
+    if (!response.ok) {
+      throw new Error(result.detail || "Unable to check teacher login.");
+    }
+    setAdminStatus(result.authenticated, result.configured);
+  }
 
   // Function to fetch activities from API
   async function fetchActivities() {
     try {
       const response = await fetch("/activities");
+      if (!response.ok) {
+        throw new Error("Failed to load activities.");
+      }
       const activities = await response.json();
 
-      // Clear loading message
-      activitiesList.innerHTML = "";
+      activitiesList.replaceChildren();
+      activitySelect.replaceChildren(new Option("-- Select an activity --", ""));
 
       // Populate activities list
       Object.entries(activities).forEach(([name, details]) => {
@@ -21,31 +56,69 @@ document.addEventListener("DOMContentLoaded", () => {
         const spotsLeft =
           details.max_participants - details.participants.length;
 
-        // Create participants HTML with delete icons instead of bullet points
-        const participantsHTML =
-          details.participants.length > 0
-            ? `<div class="participants-section">
-              <h5>Participants:</h5>
-              <ul class="participants-list">
-                ${details.participants
-                  .map(
-                    (email) =>
-                      `<li><span class="participant-email">${email}</span><button class="delete-btn" data-activity="${name}" data-email="${email}">❌</button></li>`
-                  )
-                  .join("")}
-              </ul>
-            </div>`
-            : `<p><em>No participants yet</em></p>`;
+        const title = document.createElement("h4");
+        title.textContent = name;
+        activityCard.appendChild(title);
 
-        activityCard.innerHTML = `
-          <h4>${name}</h4>
-          <p>${details.description}</p>
-          <p><strong>Schedule:</strong> ${details.schedule}</p>
-          <p><strong>Availability:</strong> ${spotsLeft} spots left</p>
-          <div class="participants-container">
-            ${participantsHTML}
-          </div>
-        `;
+        const description = document.createElement("p");
+        description.textContent = details.description;
+        activityCard.appendChild(description);
+
+        const schedule = document.createElement("p");
+        const scheduleLabel = document.createElement("strong");
+        scheduleLabel.textContent = "Schedule: ";
+        schedule.append(scheduleLabel, document.createTextNode(details.schedule));
+        activityCard.appendChild(schedule);
+
+        const availability = document.createElement("p");
+        const availabilityLabel = document.createElement("strong");
+        availabilityLabel.textContent = "Availability: ";
+        availability.append(
+          availabilityLabel,
+          document.createTextNode(`${spotsLeft} spots left`)
+        );
+        activityCard.appendChild(availability);
+
+        const participantsContainer = document.createElement("div");
+        participantsContainer.className = "participants-container";
+        const participantsSection = document.createElement("div");
+        participantsSection.className = "participants-section";
+        const participantsHeading = document.createElement("h5");
+        participantsHeading.textContent = "Participants:";
+        participantsSection.appendChild(participantsHeading);
+
+        if (details.participants.length > 0) {
+          const participantsList = document.createElement("ul");
+          participantsList.className = "participants-list";
+          details.participants.forEach((email) => {
+            const participant = document.createElement("li");
+            const participantEmail = document.createElement("span");
+            participantEmail.className = "participant-email";
+            participantEmail.textContent = email;
+            participant.appendChild(participantEmail);
+
+            if (isAdmin) {
+              const deleteButton = document.createElement("button");
+              deleteButton.type = "button";
+              deleteButton.className = "delete-btn";
+              deleteButton.textContent = "Remove";
+              deleteButton.addEventListener("click", () =>
+                handleUnregister(name, email)
+              );
+              participant.appendChild(deleteButton);
+            }
+
+            participantsList.appendChild(participant);
+          });
+          participantsSection.appendChild(participantsList);
+        } else {
+          const emptyMessage = document.createElement("p");
+          emptyMessage.textContent = "No participants yet";
+          participantsSection.appendChild(emptyMessage);
+        }
+
+        participantsContainer.appendChild(participantsSection);
+        activityCard.appendChild(participantsContainer);
 
         activitiesList.appendChild(activityCard);
 
@@ -55,11 +128,6 @@ document.addEventListener("DOMContentLoaded", () => {
         option.textContent = name;
         activitySelect.appendChild(option);
       });
-
-      // Add event listeners to delete buttons
-      document.querySelectorAll(".delete-btn").forEach((button) => {
-        button.addEventListener("click", handleUnregister);
-      });
     } catch (error) {
       activitiesList.innerHTML =
         "<p>Failed to load activities. Please try again later.</p>";
@@ -68,11 +136,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   // Handle unregister functionality
-  async function handleUnregister(event) {
-    const button = event.target;
-    const activity = button.getAttribute("data-activity");
-    const email = button.getAttribute("data-email");
-
+  async function handleUnregister(activity, email) {
     try {
       const response = await fetch(
         `/activities/${encodeURIComponent(
@@ -109,6 +173,54 @@ document.addEventListener("DOMContentLoaded", () => {
       console.error("Error unregistering:", error);
     }
   }
+
+  loginToggle.addEventListener("click", () => {
+    loginForm.classList.toggle("hidden");
+    if (!loginForm.classList.contains("hidden")) {
+      document.getElementById("username").focus();
+    }
+  });
+
+  loginForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const formData = new FormData(loginForm);
+
+    try {
+      const response = await fetch("/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(Object.fromEntries(formData.entries())),
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result.detail || "Login failed.");
+      }
+
+      await refreshAuthStatus();
+      await fetchActivities();
+      authStatus.textContent = result.message;
+      loginForm.reset();
+    } catch (error) {
+      authStatus.textContent = `Login failed: ${error.message}`;
+      console.error("Error logging in:", error);
+    }
+  });
+
+  logoutButton.addEventListener("click", async () => {
+    try {
+      const response = await fetch("/auth/logout", { method: "POST" });
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result.detail || "Logout failed.");
+      }
+      setAdminStatus(false);
+      await fetchActivities();
+      authStatus.textContent = result.message;
+    } catch (error) {
+      authStatus.textContent = `Logout failed: ${error.message}`;
+      console.error("Error logging out:", error);
+    }
+  });
 
   // Handle form submission
   signupForm.addEventListener("submit", async (event) => {
@@ -156,5 +268,11 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   // Initialize app
-  fetchActivities();
+  refreshAuthStatus()
+    .catch((error) => {
+      setAdminStatus(false, false);
+      authStatus.textContent = `Teacher login unavailable: ${error.message}`;
+      console.error("Error checking teacher login:", error);
+    })
+    .finally(fetchActivities);
 });
