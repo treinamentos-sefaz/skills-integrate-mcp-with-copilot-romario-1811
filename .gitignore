@@ -41,3 +41,6 @@ __pycache__
 
 # Env files
 .env
+
+# Local teacher accounts
+src/admin_users.json
